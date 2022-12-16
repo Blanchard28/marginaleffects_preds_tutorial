@@ -1,0 +1,201 @@
+---
+title: "Model predictions and marginal effects"
+author: "Maxime Blanchard"
+date: "Last updated `r Sys.Date()`"
+output: html_document
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This tutorial shows you how to plot predictions and marginal effects of ordinary least squares (OLS) regression results using R. It specifically shows how to plot two confidence intervals around your predictions and marginal effects to provide more information on the uncertainty of your results.
+
+First, let's load the necessary packages. We will use the `tidyverse`[@tidyverse] suite of packages to manipulate and plot data, along with the `marginaleffects`[@marginaleffects] package to quickly generate model predictions and compute marginal effects.
+
+```{r, message = FALSE}
+library(tidyverse)
+library(marginaleffects)
+```
+
+
+Let's start by simulating some data. We will set a seed to ensure replicability, then create the object $n$ to set the number of observations we want to create and finally simulate the data. To do so, we create two random normal distributions, `x1` and `x2`, which will serve as our covariates in the model we will soon estimate. Then we build our outcome variable, which we conveniently name `outcome`, as a function of our two covariates plus some random noise.
+
+```{r}
+set.seed(35)
+n <- 100
+data <- data.frame(x1 = rnorm(n, 5, 5),
+                   x2 = rnorm(n, -3, 10)) %>% 
+    mutate(outcome = 0.4*x1 + 2*x2 + rnorm(n, 2, 13))
+```
+
+We therefore define the data-generating process (DGP) as 
+
+$$
+Y = 2 + .4*X1 + 2*X2 + \varepsilon
+$$
+
+where $\varepsilon \sim \text{N}(0, 13^2 = 169)$ and use our DGP to create 100 observations. The intercept, whose value is 2, is not explicitly stated in our call to `mutate`, but it is implied by our inclusion of a noise parameter following a normal distribution centered at 2.
+
+Let's visualize the relationship between our two covariates and our outcome variable, reshaping the dataframe with `pivot_longer` so we can show both relationships in a single plot:
+
+```{r}
+data %>% 
+    pivot_longer(cols = c(x1, x2),
+                 names_to = "variable") %>% 
+    ggplot(aes(x = value, y = outcome)) +
+    geom_point() +
+    labs(title = "Relationship between the covariates and the outcome variable",
+         x = "Value", y = "Outcome") +
+    theme_classic() +
+    facet_wrap(. ~ variable) +
+    theme(plot.title = element_text(face = "bold"))
+```
+
+As you can see, the association between `x2` and the `outcome` variable is much stronger than the latter's association with `x1`. This reflects the DGP we stipulated above.
+
+Now we will regress our outcome variable on our two covariates, and look at the results using the `summary` function. Notice how I explicitly state the intercept, calling `1` in the regression formula. This is not necessary, as `lm` includes an intercept by default, by I personally like to be as explicit as possible when formulating my models. I find this practice to be helpful when working with complex models.
+
+```{r}
+reg <- lm(outcome ~ 1 + x1 + x2,
+          data = data)
+summary(reg)
+```
+
+The results we obtain are roughly reflective of the DGP we specified, although we have a sizable amount of sampling variance that comes into play given our relatively small sample size ($n = 100$). Accordingly, our estimates of the relationship between `x1` and `x2` are quite close to their "true" values -- as defined above -- which stand at .4 and 2, respectively. The point estimate of our intercept is slightly off, but it is also imprecisely estimated, as indicated by its large standard-error.
+
+Now let's say you want to visually present those regression results, including a measure of the uncertainty of your point estimates, but do not want to arbitrarily select a given p-value. Typically, we are taught to focus on $p<.05$ -- i.e., 95% confidence intervals -- but there is nothing magical about this number, it is as arbitrary as $p<.06$ or $p<.029$. In fact, applied statisticians are being increasingly vocal in their calls to abandon such arbitrary thresholds of statistical significance [@gelman2006difference; @wasserstein2019moving].
+
+But how can you do so when visually plotting regression results? One would certainly not want to abandon _any_ kind of measure of uncertainty around our estimates, that would be counter-productive. An approach which is becoming increasingly common is to plot two confidence intervals (rather than one) around our model estimates. Let's use the package `marginaleffects` to do so.
+
+We'll focus first on presenting model-based predictions. To do so, we need to call the function `predictions()`, inside which we can specify the model object on which our predictions will be based and the confidence interval that we want around our predictions. Unfortunately, `predictions()` does not currently accommodate multiple confidence intervals, as you can see below:
+
+```{r, error=TRUE}
+# does not work
+predictions(model = reg,
+            conf_level = c(0.95, 0.99))
+```
+
+There's an easy work-around though, as `predictions()` gives us the standard-error around each of the predictions it generates. Here's an example, focusing on the variable `x1`. We simply call `newdata`, and inside `datagrid`, we specify that we want predictions from the minimum value of `x1` to its maximum value, with a prediction for each 0.1 increment:
+
+```{r}
+preds_x1 <- predictions(model = reg,
+                        newdata = datagrid(x1 = seq(min(data$x1), max(data$x1), by = 0.1)))
+```
+
+This gives us a dataframe of predicted values at each value of the `x1` variable, with additional information on each prediction:
+
+```{r}
+head(preds_x1)
+```
+
+By moving up in 0.1 increments, we now have a pretty long list of predictions, which ensures the precision of our visual display of the relationship between `x1` and `outcome`:
+
+```{r}
+nrow(preds_x1)
+```
+
+Using the dataframe created above, we can plot this relationship with two confidence intervals, simply by calling `geom_ribbon` twice, with a different critical value for each confidence band (here I went with a 90% and a 95% confidence interval):
+
+```{r}
+ggplot(preds_x1, aes(x = x1, y = predicted)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = predicted - 1.96*std.error, ymax = predicted + 1.96*std.error), 
+                fill = "grey70", alpha = 0.3) +
+    geom_ribbon(aes(ymin = predicted - 1.68*std.error, ymax = predicted + 1.68*std.error), 
+                fill = "grey30", alpha = 0.3) +
+    labs(y = "Predicted value") +
+    theme_classic()
+```
+
+Make sure to vary the ribbon colors using `fill` to make the two confidence intervals distinguishable from one another. Also, for aesthetic purposes, I personally like to use `alpha` to make the ribbons transparent a little bit.
+
+The same approach works for `x2`:
+
+```{r}
+preds_x2 <- predictions(model = reg,
+                        newdata = datagrid(x2 = seq(min(data$x2), max(data$x2), by = 0.1)))
+
+ggplot(preds_x2, aes(x = x2, y = predicted)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = predicted - 1.96*std.error, ymax = predicted + 1.96*std.error), 
+                fill = "grey70", alpha = 0.3) +
+    geom_ribbon(aes(ymin = predicted - 1.68*std.error, ymax = predicted + 1.68*std.error), 
+                fill = "grey30", alpha = 0.3) +
+    labs(y = "Predicted value") +
+    theme_classic()
+```
+
+Using the piping operator along with `facet_wrap`, we can plot both results in a single plot and avoid having to create unnecessary objects to maximize the efficiency of our code:
+
+```{r}
+bind_rows(
+    predictions(model = reg,
+                newdata = datagrid(x1 = seq(min(data$x1), max(data$x1), by = 0.1))) %>% 
+        mutate(var = "x1") %>% 
+        dplyr::select(rowid, predicted, std.error, x1),
+    predictions(model = reg,
+                newdata = datagrid(x2 = seq(min(data$x2), max(data$x2), by = 0.1))) %>% 
+        mutate(var = "x2") %>% 
+        dplyr::select(rowid, predicted, std.error, x2)
+    ) %>% 
+    # reshaping with pivot_longer to have both variables in a single column
+    pivot_longer(cols = c(x1, x2),
+                 names_to = "variable") %>% 
+    # binding the rows creates some NAs, as each binded dataframe has a unique column (x1 and x2)
+    # let's remove these unnecessary rows using drop_na()
+    drop_na() %>% 
+    ggplot(aes(x = value, y = predicted)) +
+    geom_ribbon(aes(ymin = predicted - 1.96*std.error, ymax = predicted + 1.96*std.error), 
+                fill = "grey70", alpha = 0.3) +
+    geom_ribbon(aes(ymin = predicted - 1.68*std.error, ymax = predicted + 1.68*std.error), 
+                fill = "black", alpha = 0.3) +
+    geom_line() +
+    labs(title = "Predicted values of the outcome conditional on the value of each covariate",
+         subtitle = "Based on OLS results",
+         x = "Value of covariate", y = "Predicted value") +
+    theme_classic() +
+    theme(plot.title = element_text(face = "bold")) +
+    facet_wrap(. ~ variable,
+               scales = "free_x") # since both variables have different scales
+```
+
+We can use a similar approach to present the marginal effect of `x1` and `x2`. While prediction plots are very useful to convey information about the substantive significance of relationships, marginal effects provide direct information on their statistical significance.
+
+This time, we call the `marginaleffects()` function, and then summarize the information with the help of `tidy()`, which gives us a simple dataframe of marginal effects whose length is equal to the number of covariates in the model - in our case, only two.
+
+```{r}
+marginaleffects(model = reg) %>% 
+    tidy()
+```
+
+In a simple case like the one we have here, marginal effects provide the same information as regression results. But in more complex models, notably models with interaction terms, they provide information that tabled results alone cannot provide. Even in simple cases like ours, they allow to generate coefficients plots, which are progressively replacing regression tables as they are simpler to interpret.
+
+To plot our marginal effects, we can use a similar approach as we did previously, using the piping operator to directly plug the dataframe above inside `ggplot()` without creating any object. This time, since marginal effects are point estimates, we need to call `geom_point` and add two error bars around it (one for each confidence interval we want to plot, here 90% and 95% confidence intervals). Each error bar needs to be distinguishable from the other in some way. Here, I picked two different colors (90% CI = black, 95% CI = grey) and also vary the size of the error bars to make it easier to distinguish between the two confidence levels. I also add a line at zero since this is typically the value against which we want to compare our point estimates. Finally, I flip the plot horizontally using `coord_flip`, as I find that this makes a more aesthetic display of the results and use the `labs` argument to put useful information to understand the plot.
+
+```{r}
+marginaleffects(model = reg) %>% 
+    tidy() %>% 
+    ggplot(aes(x = term, y = estimate)) +
+    geom_hline(yintercept = 0) + # to compare our point estimates to the null hypothesis of zero effect
+    geom_point(size = 3.5) +
+    geom_errorbar(aes(ymin = estimate - 1.96*std.error, ymax = estimate + 1.96*std.error),
+                  width = 0, size = 1, color = "grey70") +
+    geom_errorbar(aes(ymin = estimate - 1.68*std.error, ymax = estimate + 1.68*std.error),
+                  width = 0, size = 1.5) +
+    labs(title = "Marginal effects of covariates",
+         subtitle = "Based on OLS results",
+         caption = "\nMarginal effects with 90% (black) and 95% (grey) confidence intervals",
+         x = "Covariate", y = "Estimate") +
+    theme_classic() +
+    theme(plot.title = element_text(face = "bold")) +
+    coord_flip()
+```
+
+This is an interesting case where having two confidence intervals would nuance our interpretation of the results for `x1`, as its 90% confidence interval does not overlap zero, but is 95% confidence interval does. This is useful information about the statistical significance of the relationship between `x1` and `outcome` that neither the prediction plot nor standard regression tables convery, as the latter typically only present standard-errors along with stars indicating a given level of statistical significance.
+
+The literature on applied statistics is progressively converging toward an understanding of p-values as continuous measures of the uncertainty of our regression results, at the expense of a more traditional understanding of them as binary thresholds determining statistical significance. Yet, how exactly should we interpret results such as that for `x1`, which is statistically significant at $p<.1$ but not at $p<.05$, is open for interpretation. Indeed, this greater embrace of uncertainty also comes at a cost, the cost being that there is no strictly right or wrong way to interpret the results. The interpretation may become a bit fuzzier, but in my humble opinion it is a price well worth paying as using continuous measures of uncertainty is considerably more informative than the traditional binary conception of statistical uncertainty.
+
+## References
+
